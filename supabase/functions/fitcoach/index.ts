@@ -127,7 +127,11 @@ serve(async (req) => {
       if (!safe.quick_replies || safe.quick_replies.length === 0) {
         if (s === "goal") safe.quick_replies = ["Weight Loss", "Weight Gain"];
         else if (s === "activity_level") safe.quick_replies = ["sedentary", "light", "moderate", "active", "very_active"];
-        else if (s === "dietary_preferences" || s === "food_pref") safe.quick_replies = ["vegetarian", "non-veg", "mixed", "vegan", "kerala_special"];
+        // else if (s === "dietary_preferences" || s === "food_pref") safe.quick_replies = ["vegetarian", "non-veg", "mixed", "vegan", "kerala_special"];
+          else if (slot.includes("diet")) {
+  safe.quick_replies = ["Veg", "Non-Veg", "Vegan", "Kerala Special"];
+}
+
         else if (s === "gender") safe.quick_replies = ["male", "female", "other"];
         else safe.quick_replies = ["Yes", "No", "Start over"];
       }
