@@ -28,188 +28,120 @@ export const useFitCoach = () => {
   const [messages, setMessages] = useState<Message[]>(() => {
     try {
       const raw = localStorage.getItem(LS_MESSAGES_KEY);
-      return raw ? JSON.parse(raw) : [];
-
-      // return raw ? JSON.parse(raw) : [
-      //   {
-      //     role: "assistant",
-      //     content:
-      //       "Welcome to HealthBuddy! I'm your AI fitness and diet coach. Let's start by choosing your language. നിങ്ങളുടെ ഭാഷ തിരഞ്ഞെടുക്കുക.",
-      //     quickReplies: ["English", "Malayalam / മലയാളം"],
-      //   },
-      // ];
+      return raw ? JSON.parse(raw) : [
+        {
+          role: "assistant",
+          content: "Welcome to HealthBuddy! Let's start by choosing your language. നിങ്ങളുടെ ഭാഷ തിരഞ്ഞെടുക്കുക.",
+          quickReplies: ["English", "Malayalam / മലയാളം"],
+        },
+      ];
     } catch {
       return [
         {
           role: "assistant",
-          content:
-            "Welcome to HealthBuddy! I'm your AI fitness and diet coach. Let's start by choosing your language. നിങ്ങളുടെ ഭാഷ തിരഞ്ഞെടുക്കുക.",
+          content: "Welcome to HealthBuddy! Let's start by choosing your language. നിങ്ങളുടെ ഭാഷ തിരഞ്ഞെടുക്കുക.",
           quickReplies: ["English", "Malayalam / മലയാളം"],
         },
       ];
     }
   });
 
-  const [sessionId, setSessionId] = useState<string>(() => {
-    return localStorage.getItem(LS_SESSION_KEY) || "";
-  });
-  const [userLanguage, setUserLanguage] = useState<"en" | "ml" | "">(() => {
-    return (localStorage.getItem(LS_LANG_KEY) as "en" | "ml" | "") || "";
-  });
-
+  const [sessionId, setSessionId] = useState<string>(() => localStorage.getItem(LS_SESSION_KEY) || "");
+  const [userLanguage, setUserLanguage] = useState<"en" | "ml" | "">(() => (localStorage.getItem(LS_LANG_KEY) as "en" | "ml" | "") || "");
   const [isLoading, setIsLoading] = useState(false);
 
-  // persist messages/session/lang to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem(LS_MESSAGES_KEY, JSON.stringify(messages));
-    } catch {}
-  }, [messages]);
+  useEffect(() => { try { localStorage.setItem(LS_MESSAGES_KEY, JSON.stringify(messages)); } catch {} }, [messages]);
+  useEffect(() => { try { if (sessionId) localStorage.setItem(LS_SESSION_KEY, sessionId); else localStorage.removeItem(LS_SESSION_KEY); } catch {} }, [sessionId]);
+  useEffect(() => { try { if (userLanguage) localStorage.setItem(LS_LANG_KEY, userLanguage); else localStorage.removeItem(LS_LANG_KEY); } catch {} }, [userLanguage]);
 
-  useEffect(() => {
-    try {
-      if (sessionId) localStorage.setItem(LS_SESSION_KEY, sessionId);
-      else localStorage.removeItem(LS_SESSION_KEY);
-    } catch {}
-  }, [sessionId]);
-
-  useEffect(() => {
-    try {
-      if (userLanguage) localStorage.setItem(LS_LANG_KEY, userLanguage);
-      else localStorage.removeItem(LS_LANG_KEY);
-    } catch {}
-  }, [userLanguage]);
-
-  // normalize quick reply tokens to internal values
   const normalizeQuickReplyToValue = (reply: string) => {
     const r = reply.trim().toLowerCase();
     if (["english", "english 🇬🇧", "eng", "en"].includes(r)) return "English";
     if (["malayalam", "മലയാളം", "malayalam / മലയാളം", "ml"].includes(r)) return "Malayalam";
-    // handle standard tokens
     return reply;
   };
 
-  const sendMessage = async (
-    userMessage: string,
-    opts?: { generate_pdf?: boolean; short?: boolean; mode?: string }
-  ) => {
+  const sendMessage = async (userMessage: string, opts?: { generate_pdf?: boolean; short?: boolean; mode?: string }) => {
     setIsLoading(true);
-
-    const newUserMessage: Message = {
-      role: "user",
-      content: userMessage,
-    };
-
-    setMessages((prev) => [...prev, newUserMessage]);
+    const newUserMessage: Message = { role: "user", content: userMessage };
+    setMessages(prev => [...prev, newUserMessage]);
 
     try {
-      // Build conversation array in model-friendly shape
-      const conversationHistory = [...messages, newUserMessage].map((msg) => ({
-        role: msg.role,
-        content: msg.content,
-      }));
+      // use a short tail of conversation when sending to the backend to avoid confusing the model with repeated welcome text
+      const TAIL_LEN = 10;
+      const tail = [...messages, newUserMessage].slice(-TAIL_LEN).map(m => ({ role: m.role, content: m.content }));
 
-      const payload: any = {
-        messages: conversationHistory,
-        session_id: sessionId || undefined,
-        user_language: userLanguage || undefined,
-      };
-
+      const payload: any = { messages: tail, session_id: sessionId || undefined, user_language: userLanguage || undefined };
       if (opts?.generate_pdf) payload.generate_pdf = true;
       if (opts?.short) payload.short = true;
       if (opts?.mode) payload.mode = opts.mode;
 
-      const { data, error } = await supabase.functions.invoke("fitcoach", {
-        body: payload,
-      });
-
-      if (error) {
-        throw error;
-      }
-
+      const { data, error } = await supabase.functions.invoke("fitcoach", { body: payload });
+      if (error) throw error;
       const aiResponse = data as AIResponse;
 
-      // update session id if returned
-      if (aiResponse.session_id) {
-        setSessionId(aiResponse.session_id);
+      // persist session_id / language
+      if (aiResponse.session_id) setSessionId(aiResponse.session_id);
+      if (aiResponse.user_language) setUserLanguage(aiResponse.user_language);
+      else {
+        const lu = newUserMessage.content.trim().toLowerCase();
+        if (["english", "eng", "en"].includes(lu)) setUserLanguage("en");
+        if (["malayalam", "മലയാളം", "ml"].includes(lu)) setUserLanguage("ml");
       }
 
-      // update language if AI set it
-      if (aiResponse.user_language) {
-        setUserLanguage(aiResponse.user_language);
+      // defensive quick replies for ask_slot
+      if (aiResponse.type === "ask_slot" && (!aiResponse.quick_replies || aiResponse.quick_replies.length === 0)) {
+        const s = (aiResponse.slot_to_ask || "").toLowerCase();
+        if (s === "activity_level") aiResponse.quick_replies = ["sedentary", "light", "moderate", "active", "very_active"];
+        else if (s === "dietary_preferences" || s === "food_pref") aiResponse.quick_replies = ["vegetarian", "non-veg", "mixed", "vegan", "kerala_special"];
+        else if (s === "goal") aiResponse.quick_replies = ["Weight Loss", "Weight Gain"];
+        else if (s === "gender") aiResponse.quick_replies = ["male", "female", "other"];
+      }
+
+      // dedupe identical assistant messages
+      const lastAssistant = messages.slice().reverse().find(m => m.role === "assistant");
+      const duplicateCheck = (aiResponse.message || "").trim();
+      if (lastAssistant && lastAssistant.content && lastAssistant.content.trim() === duplicateCheck) {
+        setMessages(prev => prev.map(m => {
+          if (m.role === "assistant" && m.content.trim() === duplicateCheck) {
+            return { ...m, quickReplies: aiResponse.quick_replies || m.quickReplies, meta: { ...(m.meta || {}), ...(aiResponse.meta || {}) }, isFinalPlan: aiResponse.type === "final_plan" ? true : m.isFinalPlan };
+          }
+          return m;
+        }));
       } else {
-        // heuristics: if the user selected a language quick reply, update it
-        const lastUser = newUserMessage.content.trim().toLowerCase();
-        if (["english", "eng", "en"].includes(lastUser)) setUserLanguage("en");
-        if (["malayalam", "മലയാളം", "ml"].includes(lastUser)) setUserLanguage("ml");
+        const botMessage: Message = { role: "assistant", content: aiResponse.message || "", quickReplies: aiResponse.quick_replies || [], isFinalPlan: aiResponse.type === "final_plan", meta: aiResponse.meta || {} };
+        if (aiResponse.meta?.pdfUrl) botMessage.content = `${botMessage.content}\n\nYour plan PDF: ${aiResponse.meta.pdfUrl}`;
+        else if (aiResponse.meta?.pdfBase64) botMessage.content = `${botMessage.content}\n\n(pdf_base64_available)`;
+        setMessages(prev => [...prev, botMessage]);
       }
 
-      // If backend included pdf meta or pdfUrl, attach to message content & meta
-      const botMessage: Message = {
-        role: "assistant",
-        content: aiResponse.message || "",
-        quickReplies: aiResponse.quick_replies || [],
-        isFinalPlan: aiResponse.type === "final_plan",
-        meta: aiResponse.meta || {},
-      };
-
-      // If meta contains pdfUrl, append a short hint so Chat shows download button reliably
-      if (aiResponse.meta?.pdfUrl) {
-        botMessage.content = `${botMessage.content}\n\nYour plan PDF: ${aiResponse.meta.pdfUrl}`;
-      } else if (aiResponse.meta?.pdfBase64) {
-        // include a small data url hint (Chat download will detect data:application/pdf;base64)
-        botMessage.content = `${botMessage.content}\n\n(pdf_base64_available)`;
+      // ensure final_plan quick replies exist
+      if (aiResponse.type === "final_plan") {
+        setMessages(prev => {
+          const last = prev[prev.length - 1];
+          if (!last) return prev;
+          if (!last.quickReplies || last.quickReplies.length === 0) last.quickReplies = ["Download PDF", "WhatsApp", "Start over"];
+          last.isFinalPlan = true;
+          last.meta = { ...(last.meta || {}), ...(aiResponse.meta || {}) };
+          return [...prev.slice(0, prev.length - 1), last];
+        });
       }
-
-      setMessages((prev) => [...prev, botMessage]);
-
-      // If backend set ask_slot with quick_replies, frontend will show buttons (hook passes quickReplies)
-      // If backend returned final_plan with structured fields, we already appended them to message in backend.
     } catch (err) {
       console.error("Error sending message:", err);
-
-      const errorMessage: Message = {
-        role: "assistant",
-        content: "Sorry, I encountered an error. Please try again.",
-        quickReplies: ["Start over"],
-      };
-
-      setMessages((prev) => [...prev, errorMessage]);
+      const errorMessage: Message = { role: "assistant", content: "Sorry, I encountered an error. Please try again.", quickReplies: ["Start over"] };
+      setMessages(prev => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
     }
   };
 
   const resetChat = () => {
-
-    const welcome = null;
-setMessages([]);
-setSessionId("");
-setUserLanguage("");
-
-    // const welcome = {
-    //   role: "assistant",
-    //   content: "Welcome back! Let's start fresh. Please choose your language.",
-    //   quickReplies: ["English", "Malayalam / മലയാളം"],
-    // } as Message;
-
+    const welcome: Message = { role: "assistant", content: "Welcome back! Let's start fresh. Please choose your language.", quickReplies: ["English", "Malayalam / മലയാളം"] };
     setMessages([welcome]);
     setSessionId("");
     setUserLanguage("");
-    try {
-      localStorage.removeItem(LS_MESSAGES_KEY);
-      localStorage.removeItem(LS_SESSION_KEY);
-      localStorage.removeItem(LS_LANG_KEY);
-    } catch {}
+    try { localStorage.removeItem(LS_MESSAGES_KEY); localStorage.removeItem(LS_SESSION_KEY); localStorage.removeItem(LS_LANG_KEY); } catch {}
   };
 
-  return {
-    messages,
-    isLoading,
-    sendMessage,
-    resetChat,
-    sessionId,
-    userLanguage,
-    setUserLanguage,
-  };
+  return { messages, isLoading, sendMessage, resetChat, sessionId, userLanguage, setUserLanguage };
 };
