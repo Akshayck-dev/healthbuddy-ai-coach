@@ -6,24 +6,11 @@ import { Send, Loader2, RotateCcw, Download, Share2 } from "lucide-react";
 import Navbar from "@/components/Navbar";
 import WhatsAppButton from "@/components/WhatsAppButton";
 import { useToast } from "@/hooks/use-toast";
-
-interface Message {
-  role: "user" | "assistant";
-  content: string;
-  quickReplies?: string[];
-  isFinalPlan?: boolean;
-}
+import { useFitCoach, Message } from "@/hooks/useFitCoach";
 
 const Chat = () => {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: "assistant",
-      content: "Welcome to HealthBuddy! I'm your AI fitness and diet coach. Let's start by choosing your language. നിങ്ങളുടെ ഭാഷ തിരഞ്ഞെടുക്കുക.",
-      quickReplies: ["English", "Malayalam / മലയാളം"],
-    },
-  ]);
+  const { messages, isLoading, sendMessage, resetChat } = useFitCoach();
   const [input, setInput] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
@@ -39,25 +26,8 @@ const Chat = () => {
     const textToSend = messageText || input;
     if (!textToSend.trim() || isLoading) return;
 
-    const userMessage: Message = {
-      role: "user",
-      content: textToSend,
-    };
-
-    setMessages((prev) => [...prev, userMessage]);
     setInput("");
-    setIsLoading(true);
-
-    // Simulate AI response (replace with actual AI call)
-    setTimeout(() => {
-      const botMessage: Message = {
-        role: "assistant",
-        content: "Thank you for your message! I'm processing your request...",
-        quickReplies: ["Tell me more", "I need help", "Start over"],
-      };
-      setMessages((prev) => [...prev, botMessage]);
-      setIsLoading(false);
-    }, 1000);
+    await sendMessage(textToSend);
   };
 
   const handleQuickReply = (reply: string) => {
@@ -65,13 +35,7 @@ const Chat = () => {
   };
 
   const handleRestart = () => {
-    setMessages([
-      {
-        role: "assistant",
-        content: "Welcome back! Let's start fresh. Please choose your language.",
-        quickReplies: ["English", "Malayalam / മലയാളം"],
-      },
-    ]);
+    resetChat();
     toast({
       title: "Chat Reset",
       description: "Starting a new conversation",
@@ -79,13 +43,26 @@ const Chat = () => {
   };
 
   const handleDownloadPlan = () => {
+    const lastMessage = messages[messages.length - 1];
+    const blob = new Blob([lastMessage.content], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "healthbuddy-plan.txt";
+    a.click();
+    URL.revokeObjectURL(url);
+    
     toast({
       title: "Download Started",
-      description: "Your plan is being prepared as PDF",
+      description: "Your plan has been downloaded",
     });
   };
 
   const handleShareWhatsApp = () => {
+    const lastMessage = messages[messages.length - 1];
+    const text = encodeURIComponent(lastMessage.content);
+    window.open(`https://wa.me/?text=${text}`, "_blank");
+    
     toast({
       title: "Opening WhatsApp",
       description: "Share your plan with friends",

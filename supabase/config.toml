@@ -1,0 +1,4 @@
+project_id = "awyiwvwwdkzbgceksqhw"
+
+[functions.fitcoach]
+verify_jwt = false
