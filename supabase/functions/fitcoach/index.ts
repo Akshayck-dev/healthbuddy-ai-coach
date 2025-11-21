@@ -18,21 +18,11 @@ function uuidv4() {
 }
 
 /**
- * SYSTEM PROMPT: instruct the model to reply with strict JSON shape.
- * The model should still follow the app slot order:
- * 1) language (handled client-side if not set)
- * 2) goal (weight_loss / weight_gain)
- * 3) current_weight_kg
- * 4) target_weight_kg
- * 5) height_cm
- * 6) wrist_cm (or 'skip')
- * 7) age
- * 8) gender
- * 9) activity_level
- * 10) food_pref
- * 11) allergies (or 'none')
+ * SYSTEM PROMPT: instruct the model to reply with strict JSON shape and follow slot order.
+ * Slot order enforced by backend policies as well.
  */
-const SYSTEM_PROMPT = `You are HealthBuddy FitCoach, bilingual (English + Malayalam). ALWAYS respond with a single JSON object (no markdown/text outside JSON). Shape:
+const SYSTEM_PROMPT = `You are HealthBuddy FitCoach, bilingual (English + Malayalam).
+Always respond with a single JSON object (no markdown/text outside JSON) using this shape:
 {
  "type":"ask_slot"|"final_plan"|"clarify"|"handoff"|"ask_language",
  "slot_to_ask": string | null,
@@ -40,7 +30,11 @@ const SYSTEM_PROMPT = `You are HealthBuddy FitCoach, bilingual (English + Malaya
  "quick_replies": string[] // may be []
 }
 Follow slot order: goal, current_weight_kg, target_weight_kg, height_cm, wrist_cm, age, gender, activity_level, food_pref, allergies.
-Validate numbers: age 15-80, height 120-220, weight 30-200. If invalid, ask again with validation message in user's language. When final_plan, include structured fields: daily_calorie_target, daily_protein_target, meal_suggestions (array), home_workout_exercises (array), water_ml, tips. Include user_language when set.`;
+Validate numbers: age 15-80, height 120-220, weight 30-200.
+When final_plan include structured fields: daily_calorie_target, daily_protein_target, meal_suggestions (array), home_workout_exercises (array), water_ml, tips.
+Include user_language when you set it (\"user_language\": \"en\" | \"ml\").
+If user requests \"WhatsApp\" or \"short\", reply with a compact final_plan suitable for messaging.`;
+
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -59,13 +53,20 @@ serve(async (req) => {
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) {
-      return new Response(JSON.stringify({ error: "LOVABLE_API_KEY not set" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ error: "LOVABLE_API_KEY not set", message: "AI service not configured" }), {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
+    // Build model messages: single system prompt + minimal conversation tail (avoid re-sending the entire history)
+    // We include only the last N messages to avoid confusing the model with repeated system/welcome texts.
+    const TAIL_LEN = 8;
+    const tail = messages.slice(-TAIL_LEN);
     const fullMessages = [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "system", content: JSON.stringify({ session_id: incomingSessionId, user_language: incomingLanguage, want_short: wantShort }) },
-      ...messages,
+      ...tail,
     ];
 
     const aiResp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
@@ -75,24 +76,26 @@ serve(async (req) => {
     });
 
     if (!aiResp.ok) {
-      const text = await aiResp.text();
-      console.error("AI error:", aiResp.status, text);
+      const text = await aiResp.text().catch(() => "");
+      console.error("AI gateway error:", aiResp.status, text);
       if (aiResp.status === 429) return new Response(JSON.stringify({ error: "rate_limited", message: "Rate limit exceeded" }), { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      if (aiResp.status === 402) return new Response(JSON.stringify({ error: "payment_required", message: "AI service needs credits" }), { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      return new Response(JSON.stringify({ error: "ai_gateway", message: "AI gateway error" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      if (aiResp.status === 402) return new Response(JSON.stringify({ error: "payment_required", message: "AI service requires credits" }), { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ error: "ai_gateway_error", message: "AI gateway returned an error" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     const aiData = await aiResp.json().catch(() => null);
     let aiMessageRaw = "";
     if (aiData?.choices?.[0]?.message?.content) aiMessageRaw = String(aiData.choices[0].message.content);
     else if (aiData?.output_text) aiMessageRaw = String(aiData.output_text);
-    else aiMessageRaw = JSON.stringify(aiData);
+    else aiMessageRaw = JSON.stringify(aiData || {});
 
     aiMessageRaw = aiMessageRaw.replace(/```json\s*|```/g, "").trim();
 
-    // Try to parse JSON from model response
+    // Try parse JSON strictly, else try to extract object substring
     let parsed = null;
-    try { parsed = JSON.parse(aiMessageRaw); } catch (e) {
+    try {
+      parsed = JSON.parse(aiMessageRaw);
+    } catch (e) {
       const match = aiMessageRaw.match(/\{[\s\S]*\}/);
       if (match) {
         try { parsed = JSON.parse(match[0]); } catch { parsed = null; }
@@ -100,7 +103,6 @@ serve(async (req) => {
     }
 
     if (!parsed || typeof parsed !== "object") {
-      // fallback: return clarify with the raw content
       return new Response(JSON.stringify({
         type: "clarify",
         slot_to_ask: null,
@@ -110,7 +112,7 @@ serve(async (req) => {
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    // Build safe response
+    // Safe response envelope
     const safe: any = {
       type: parsed.type || "clarify",
       slot_to_ask: parsed.slot_to_ask ?? null,
@@ -121,25 +123,19 @@ serve(async (req) => {
       session_id: incomingSessionId,
     };
 
-    // Defensive quick replies for slots if model omitted them
+    // Defensive quick replies if missing
     if (safe.type === "ask_slot" && safe.slot_to_ask) {
       const s = String(safe.slot_to_ask).toLowerCase();
       if (!safe.quick_replies || safe.quick_replies.length === 0) {
         if (s === "goal") safe.quick_replies = ["Weight Loss", "Weight Gain"];
         else if (s === "activity_level") safe.quick_replies = ["sedentary", "light", "moderate", "active", "very_active"];
-        // else if (s === "dietary_preferences" || s === "food_pref") safe.quick_replies = ["vegetarian", "non-veg", "mixed", "vegan", "kerala_special"];
-          else if (slot.includes("diet")) {
-  safe.quick_replies = ["Veg", "Non-Veg", "Vegan", "Kerala Special"];
-}
-
+        else if (s === "dietary_preferences" || s === "food_pref") safe.quick_replies = ["vegetarian", "non-veg", "mixed", "vegan", "kerala_special"];
         else if (s === "gender") safe.quick_replies = ["male", "female", "other"];
         else safe.quick_replies = ["Yes", "No", "Start over"];
       }
     }
 
-    // Enforce validation for numeric slots if model asks for them
-    // If parsed provides a `validation` field, let model handle it; here we ensure slot names are consistent
-    // Ensure final_plan builds readable fallback from structured fields
+    // Ensure final_plan has structured message if model provided structured fields
     if (safe.type === "final_plan") {
       try {
         const parts: string[] = [];
@@ -165,23 +161,26 @@ serve(async (req) => {
       safe.quick_replies = safe.quick_replies && safe.quick_replies.length ? safe.quick_replies : ["Download PDF", "WhatsApp", "Start over"];
     }
 
-    // Medical safety addition
+    // Medical safety banner
     if (safe.type === "final_plan" && typeof parsed.medical_conditions === "string" && parsed.medical_conditions.toLowerCase() !== "none") {
-      const warn = safe.user_language === "ml" ? "ഈ പൊതുവായ ആരോഗ്യ നിർദ്ദേശങ്ങൾ മാത്രമാണ്. ഡോക്ടറെ സമീപിക്കുക." : "This is general wellness guidance only. Please consult your doctor.";
+      const warn = safe.user_language === "ml" ? "ഈ പൊതു ആരോഗ്യ നിർദ്ദേശങ്ങൾ മാത്രമാണ്. ഡോക്ടറെ സമീപിക്കുക." : "This is general wellness guidance only. Please consult your doctor.";
       safe.message = `${warn}\n\n${safe.message}`;
     }
 
-    // PDF generation (table-based) when client requested
+    // PDF generation only if final & requested
     const isFinal = safe.type === "final_plan";
     if (isFinal && wantsPdf) {
       try {
         const { PDFDocument, StandardFonts, rgb } = await import(PDF_LIB_URL);
+
+        // optional local logo (deployment should use HTTP URL)
         const logoUrl = "file:///mnt/data/4424472f-1a30-4556-9715-1f00fa5514e1.png";
         let logoBytes: Uint8Array | null = null;
         try {
           const logoResp = await fetch(logoUrl);
           if (logoResp.ok) logoBytes = new Uint8Array(await logoResp.arrayBuffer());
         } catch {}
+
         const pdfDoc = await PDFDocument.create();
         let page = pdfDoc.addPage();
         const { width, height } = page.getSize();
@@ -193,6 +192,8 @@ serve(async (req) => {
         // header
         const headerHeight = 56;
         page.drawRectangle({ x: 0, y: height - headerHeight, width, height: headerHeight, color: rgb(0.24, 0.56, 0.35) });
+
+        // logo
         const logoSize = 40;
         if (logoBytes) {
           try {
@@ -200,15 +201,16 @@ serve(async (req) => {
             page.drawImage(embeddedImage, { x: margin, y: height - margin - logoSize + 6, width: logoSize, height: logoSize });
           } catch {}
         }
+
         const titleX = margin + (logoBytes ? logoSize + 12 : 0);
         page.drawText("HealthBuddy", { x: titleX, y: height - margin - 8, size: 18, font: boldFont, color: rgb(1, 1, 1) });
         page.drawText("Personalized Fitness Plan", { x: titleX, y: height - margin - 26, size: 10, font, color: rgb(1, 1, 1) });
+
         cursorY = height - headerHeight - 18;
         page.drawText(`Date: ${new Date().toLocaleDateString()}`, { x: margin, y: cursorY, size: 9, font, color: rgb(0.2, 0.2, 0.2) });
         page.drawText(`Session: ${incomingSessionId}`, { x: width - margin - 160, y: cursorY, size: 9, font, color: rgb(0.2, 0.2, 0.2) });
         cursorY -= 20;
 
-        // helper drawTable
         function drawTable(x: number, startY: number, colWidths: number[], headers: string[], rows: string[][]) {
           const rowHeight = 20;
           let y = startY;
@@ -236,7 +238,7 @@ serve(async (req) => {
           return y;
         }
 
-        // Summary row
+        // summary table
         const summaryX = margin;
         const summaryWidth = width - margin * 2;
         const summaryCols = [summaryWidth / 3, summaryWidth / 3, summaryWidth / 3];
@@ -247,7 +249,7 @@ serve(async (req) => {
         const summaryRows = [[String(calories), String(protein), String(water)]];
         cursorY = drawTable(summaryX, cursorY, summaryCols, summaryHeaders, summaryRows) - 18;
 
-        // Meal table (heuristic extraction)
+        // meals (heuristic)
         const mealX = margin;
         const mealWidth = width - margin * 2;
         const mealCols = [mealWidth * 0.18, mealWidth * 0.62, mealWidth * 0.2];
@@ -260,9 +262,7 @@ serve(async (req) => {
           mealRows.push(["Dinner", mealMatches[3].trim().replace(/\n+/g, ", "), "As suggested"]);
         } else {
           const lines = (typeof safe.message === "string" ? safe.message : "").split("\n").map((l: string) => l.trim()).filter(Boolean);
-          for (let i = 0; i < Math.min(3, lines.length); i++) {
-            mealRows.push([`Meal ${i+1}`, lines[i], "As suggested"]);
-          }
+          for (let i = 0; i < Math.min(3, lines.length); i++) mealRows.push([`Meal ${i+1}`, lines[i], "As suggested"]);
           if (mealRows.length === 0) {
             mealRows.push(["Breakfast", "Idli / Dosa / Upma", "1 serving"]);
             mealRows.push(["Lunch", "Rice + Sambar + Veg", "Moderate"]);
@@ -271,7 +271,7 @@ serve(async (req) => {
         }
         cursorY = drawTable(mealX, cursorY, mealCols, mealHeaders, mealRows) - 18;
 
-        // Workout table (heuristic)
+        // workouts
         const workoutX = margin;
         const workoutWidth = width - margin * 2;
         const workoutCols = [workoutWidth * 0.6, workoutWidth * 0.4];
@@ -292,12 +292,8 @@ serve(async (req) => {
         }
         cursorY = drawTable(workoutX, cursorY, workoutCols, workoutHeaders, workouts) - 18;
 
-        // Tips
-        const tips = safe.meta?.tips || [
-          "Drink water regularly throughout the day.",
-          "Aim for 7-8 hours of sleep.",
-          "Track progress weekly and adjust calories as needed.",
-        ];
+        // tips
+        const tips = safe.meta?.tips || ["Drink water regularly throughout the day.", "Aim for 7-8 hours of sleep.", "Track progress weekly and adjust calories as needed."];
         page.drawText("Simple Tips", { x: margin, y: cursorY, size: 12, font: boldFont, color: rgb(0.15, 0.15, 0.15) });
         cursorY -= 18;
         for (const t of tips) {
@@ -344,9 +340,8 @@ serve(async (req) => {
 
     const out = { ...safe, session_id: incomingSessionId, timestamp: new Date().toISOString() };
     return new Response(JSON.stringify(out), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-
   } catch (err) {
-    console.error("Unhandled error:", err);
+    console.error("Unhandled error in fitcoach:", err);
     return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err), message: "Internal error", quick_replies: ["Start over"] }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
 });
