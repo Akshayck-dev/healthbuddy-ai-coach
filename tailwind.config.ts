@@ -57,6 +57,11 @@ export default {
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
         },
+        wellness: {
+          green: "hsl(122, 39%, 49%)",
+          dark: "hsl(0, 0%, 13%)",
+          accent: "hsl(45, 100%, 51%)",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",
