@@ -1,4 +1,5 @@
-import { useState } from "react";
+// src/hooks/useFitCoach.ts
+import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 
 export interface Message {
@@ -10,26 +11,76 @@ export interface Message {
 
 export interface AIResponse {
   type: "ask_slot" | "final_plan" | "clarify" | "handoff" | "ask_language";
-  slot_to_ask?: string;
+  slot_to_ask?: string | null;
   message: string;
   quick_replies?: string[];
-  user_language?: "en" | "ml";        // add this
+  user_language?: "en" | "ml" | "";
+  session_id?: string;
+  meta?: any;
 }
 
-export const useFitCoach = () => {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: "assistant",
-      content:
-        "Welcome to HealthBuddy! I'm your AI fitness and diet coach. Let's start by choosing your language. നിങ്ങളുടെ ഭാഷ തിരഞ്ഞെടുക്കുക.",
-      quickReplies: ["English", "Malayalam / മലയാളം"],
-    },
-  ]);
+const LS_SESSION_KEY = "hb_session_id";
+const LS_LANG_KEY = "hb_user_language";
+const LS_MESSAGES_KEY = "hb_messages";
 
-  const [userLanguage, setUserLanguage] = useState<"en" | "ml" | "">("");  // NEW
+export const useFitCoach = () => {
+  const [messages, setMessages] = useState<Message[]>(() => {
+    try {
+      const raw = localStorage.getItem(LS_MESSAGES_KEY);
+      return raw ? JSON.parse(raw) : [
+        {
+          role: "assistant",
+          content:
+            "Welcome to HealthBuddy! I'm your AI fitness and diet coach. Let's start by choosing your language. നിങ്ങളുടെ ഭാഷ തിരഞ്ഞെടുക്കുക.",
+          quickReplies: ["English", "Malayalam / മലയാളം"],
+        },
+      ];
+    } catch {
+      return [
+        {
+          role: "assistant",
+          content:
+            "Welcome to HealthBuddy! I'm your AI fitness and diet coach. Let's start by choosing your language. നിങ്ങളുടെ ഭാഷ തിരഞ്ഞെടുക്കുക.",
+          quickReplies: ["English", "Malayalam / മലയാളം"],
+        },
+      ];
+    }
+  });
+
+  const [sessionId, setSessionId] = useState<string>(() => {
+    return localStorage.getItem(LS_SESSION_KEY) || "";
+  });
+  const [userLanguage, setUserLanguage] = useState<"en" | "ml" | "">(() => {
+    return (localStorage.getItem(LS_LANG_KEY) as "en" | "ml" | "") || "";
+  });
+
   const [isLoading, setIsLoading] = useState(false);
 
-  const sendMessage = async (userMessage: string) => {
+  // persist messages/session/lang to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_MESSAGES_KEY, JSON.stringify(messages));
+    } catch {}
+  }, [messages]);
+
+  useEffect(() => {
+    try {
+      if (sessionId) localStorage.setItem(LS_SESSION_KEY, sessionId);
+      else localStorage.removeItem(LS_SESSION_KEY);
+    } catch {}
+  }, [sessionId]);
+
+  useEffect(() => {
+    try {
+      if (userLanguage) localStorage.setItem(LS_LANG_KEY, userLanguage);
+      else localStorage.removeItem(LS_LANG_KEY);
+    } catch {}
+  }, [userLanguage]);
+
+  const sendMessage = async (
+    userMessage: string,
+    opts?: { generate_pdf?: boolean; short?: boolean; mode?: string }
+  ) => {
     setIsLoading(true);
 
     const newUserMessage: Message = {
@@ -40,25 +91,45 @@ export const useFitCoach = () => {
     setMessages((prev) => [...prev, newUserMessage]);
 
     try {
+      // Build conversation array in model-friendly shape
       const conversationHistory = [...messages, newUserMessage].map((msg) => ({
         role: msg.role,
         content: msg.content,
       }));
 
+      const payload: any = {
+        messages: conversationHistory,
+        session_id: sessionId || undefined,
+        user_language: userLanguage || undefined,
+      };
+
+      if (opts?.generate_pdf) payload.generate_pdf = true;
+      if (opts?.short) payload.short = true;
+      if (opts?.mode) payload.mode = opts.mode;
+
       const { data, error } = await supabase.functions.invoke("fitcoach", {
-        body: { 
-          messages: conversationHistory,
-          user_language: userLanguage         // SEND LANGUAGE
-        },
+        body: payload,
       });
 
-      if (error) throw error;
+      if (error) {
+        throw error;
+      }
 
       const aiResponse = data as AIResponse;
 
-      // SAVE language if AI responds with it
+      // update session id if returned
+      if (aiResponse.session_id) {
+        setSessionId(aiResponse.session_id);
+      }
+
+      // update language if AI set it
       if (aiResponse.user_language) {
         setUserLanguage(aiResponse.user_language);
+      } else {
+        // heuristics: if the user selected a language quick reply, update it
+        const lastUser = newUserMessage.content.trim().toLowerCase();
+        if (["english", "eng", "en"].includes(lastUser)) setUserLanguage("en");
+        if (["malayalam", "മലയാളം", "ml"].includes(lastUser)) setUserLanguage("ml");
       }
 
       const botMessage: Message = {
@@ -69,8 +140,20 @@ export const useFitCoach = () => {
       };
 
       setMessages((prev) => [...prev, botMessage]);
-    } catch (error) {
-      console.error("Error sending message:", error);
+
+      // If response includes PDF URL or base64 in meta, append a quick reply to let user download/share
+      if (aiResponse.meta?.pdfUrl || aiResponse.meta?.pdfBase64) {
+        const pdfHint: Message = {
+          role: "assistant",
+          content: aiResponse.meta.pdfUrl
+            ? `Your plan PDF is ready: ${aiResponse.meta.pdfUrl}`
+            : "Your plan PDF is ready (base64 included). Use the download option.",
+          quickReplies: ["Download PDF", "Share to WhatsApp"],
+        };
+        setMessages((prev) => [...prev, pdfHint]);
+      }
+    } catch (err) {
+      console.error("Error sending message:", err);
 
       const errorMessage: Message = {
         role: "assistant",
@@ -85,15 +168,20 @@ export const useFitCoach = () => {
   };
 
   const resetChat = () => {
-    setMessages([
-      {
-        role: "assistant",
-        content: "Welcome back! Let's start fresh. Please choose your language.",
-        quickReplies: ["English", "Malayalam / മലയാളം"],
-      },
-    ]);
+    const welcome = {
+      role: "assistant",
+      content: "Welcome back! Let's start fresh. Please choose your language.",
+      quickReplies: ["English", "Malayalam / മലയാളം"],
+    } as Message;
 
-    setUserLanguage("");     // RESET LANGUAGE MEMORY
+    setMessages([welcome]);
+    setSessionId("");
+    setUserLanguage("");
+    try {
+      localStorage.removeItem(LS_MESSAGES_KEY);
+      localStorage.removeItem(LS_SESSION_KEY);
+      localStorage.removeItem(LS_LANG_KEY);
+    } catch {}
   };
 
   return {
@@ -101,5 +189,8 @@ export const useFitCoach = () => {
     isLoading,
     sendMessage,
     resetChat,
+    sessionId,
+    userLanguage,
+    setUserLanguage,
   };
 };
