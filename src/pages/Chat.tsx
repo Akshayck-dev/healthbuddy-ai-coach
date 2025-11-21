@@ -165,9 +165,12 @@ const Chat = () => {
     // 3) contains obvious pdf/url keywords
     if (content.includes("pdf") || content.includes("your plan") || content.includes(".pdf") || content.includes("download")) return true;
     // 4) meta contains pdf
-    if (message.meta && (message.meta.pdfUrl || message.meta.pdfBase64)) return true;
-    // 5) fallback: show actions for longer assistant messages (likely a plan)
-    if (message.role === "assistant" && content.length > 200) return true;
+    // if (message.meta && (message.meta.pdfUrl || message.meta.pdfBase64)) return true;
+    // // 5) fallback: show actions for longer assistant messages (likely a plan)
+    // if (message.role === "assistant" && content.length > 200) return true;
+    if (message.isFinalPlan) return true;
+if (message.meta?.pdfUrl || message.meta?.pdfBase64) return true;
+
 
     return false;
   };
