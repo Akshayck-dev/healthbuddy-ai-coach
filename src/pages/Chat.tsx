@@ -9,7 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useFitCoach, Message } from "@/hooks/useFitCoach";
 
 const Chat = () => {
-  const { messages, isLoading, sendMessage, resetChat } = useFitCoach();
+  const { messages, isLoading, sendMessage, resetChat, setUserLanguage } = useFitCoach();
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
@@ -31,6 +31,19 @@ const Chat = () => {
   };
 
   const handleQuickReply = (reply: string) => {
+    // Normalize language quick replies to short tokens so backend receives consistent values
+    const r = reply.trim();
+    const low = r.toLowerCase();
+    if (low.includes("english")) {
+      setUserLanguage("en");
+      return handleSend("English");
+    }
+    if (low.includes("malayalam") || low.includes("മലയാളം")) {
+      setUserLanguage("ml");
+      return handleSend("Malayalam");
+    }
+
+    // For other quick replies, send the exact token (server expects tokens like 'veg', 'sedentary', etc.)
     handleSend(reply);
   };
 
@@ -64,7 +77,14 @@ const Chat = () => {
       return;
     }
 
-    // 2) If content contains a data:application/pdf;base64, download it
+    // 2) If meta contains a pdfUrl, open it
+    if ((lastMessage.meta?.pdfUrl)) {
+      window.open(lastMessage.meta.pdfUrl, "_blank");
+      toast({ title: "Opening PDF", description: "Opening your plan PDF" });
+      return;
+    }
+
+    // 3) If content contains a data:application/pdf;base64, download it
     const dataPdfMatch = content.match(/data:application\/pdf;base64,([A-Za-z0-9+/=]+)/);
     if (dataPdfMatch) {
       const base64 = dataPdfMatch[1];
@@ -85,18 +105,27 @@ const Chat = () => {
       return;
     }
 
-    // 3) If the assistant previously returned a short message with a PDF URL in another message (search back)
-    for (let i = assistantMsgs.length - 1; i >= 0; i--) {
-      const m = assistantMsgs[i];
-      const urlMatch = (m.content || "").match(/https?:\/\/\S+/);
-      if (urlMatch) {
-        window.open(urlMatch[0], "_blank");
-        toast({ title: "Opening link", description: "Opening the link provided by the assistant." });
-        return;
+    // 4) If meta contains pdfBase64, download it
+    if (lastMessage.meta?.pdfBase64) {
+      const base64 = lastMessage.meta.pdfBase64;
+      const byteCharacters = atob(base64);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
       }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "healthbuddy-plan.pdf";
+      a.click();
+      URL.revokeObjectURL(url);
+      toast({ title: "Download Started", description: "Your PDF is downloading." });
+      return;
     }
 
-    // 4) Fallback: download message content as text
+    // 5) Fallback: download message content as text
     const blob = new Blob([content], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -139,7 +168,9 @@ const Chat = () => {
     if (message.quickReplies && message.quickReplies.some((q) => q.toLowerCase().includes("download"))) return true;
     // 3) contains obvious pdf/url keywords
     if (content.includes("pdf") || content.includes("your plan") || content.includes(".pdf") || content.includes("download")) return true;
-    // 4) fallback: show actions for longer assistant messages (likely a plan)
+    // 4) meta contains pdf
+    if (message.meta && (message.meta.pdfUrl || message.meta.pdfBase64)) return true;
+    // 5) fallback: show actions for longer assistant messages (likely a plan)
     if (message.role === "assistant" && content.length > 200) return true;
 
     return false;
