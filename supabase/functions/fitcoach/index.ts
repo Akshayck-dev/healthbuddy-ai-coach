@@ -8,8 +8,10 @@ const corsHeaders = {
 
 const SYSTEM_PROMPT = `You are HealthBuddy FitCoach, a bilingual (English + Malayalam) AI fitness and diet assistant. Your goal is to collect user information step-by-step to create a personalized fitness and diet plan.
 
+CRITICAL: You MUST respond with ONLY valid JSON. Do not include markdown code blocks, explanations, or any text outside the JSON object.
+
 IMPORTANT RULES:
-1. ALWAYS respond in strict JSON format with these fields:
+1. ALWAYS respond in strict JSON format with these fields (NO markdown, NO code blocks):
    {
      "type": "ask_slot" | "final_plan" | "clarify" | "handoff" | "ask_language",
      "slot_to_ask": "language|goal|age|height|weight|gender|activity_level|dietary_preferences|medical_conditions",
@@ -38,7 +40,10 @@ IMPORTANT RULES:
    - Weight: 30-200 kg
    - If medical conditions present, warn: "This is general wellness guidance only. Please consult your doctor before starting any new diet or exercise program."
 
-5. Calculate Requirements:
+5. Example Response (EXACTLY like this, pure JSON):
+{"type":"ask_slot","slot_to_ask":"goal","message":"Great! What is your main fitness goal? Are you looking for weight loss or weight gain?","quick_replies":["Weight Loss","Weight Gain"]}
+
+6. Calculate Requirements:
    For weight loss:
    - BMR using Mifflin-St Jeor equation
    - TDEE = BMR × activity multiplier
@@ -129,13 +134,29 @@ serve(async (req) => {
     const data = await response.json();
     console.log('AI response received:', data);
     
-    const aiMessage = data.choices[0].message.content;
+    let aiMessage = data.choices[0].message.content;
+    
+    // Remove markdown code blocks if present
+    aiMessage = aiMessage.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
     
     // Try to parse as JSON, if it fails, wrap it in a clarify response
     let parsedResponse;
     try {
       parsedResponse = JSON.parse(aiMessage);
+      
+      // Ensure required fields exist
+      if (!parsedResponse.message) {
+        parsedResponse.message = "I'm here to help! Let me know what you need.";
+      }
+      if (!parsedResponse.type) {
+        parsedResponse.type = "clarify";
+      }
+      if (!parsedResponse.quick_replies) {
+        parsedResponse.quick_replies = [];
+      }
+      
     } catch (e) {
+      console.error('Failed to parse AI response as JSON:', e);
       parsedResponse = {
         type: "clarify",
         message: aiMessage,
