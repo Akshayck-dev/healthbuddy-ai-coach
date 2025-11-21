@@ -42,16 +42,69 @@ const Chat = () => {
     });
   };
 
+  // Improved download: supports direct PDF URLs, data:base64 PDFs, or fallback to text file
   const handleDownloadPlan = () => {
-    const lastMessage = messages[messages.length - 1];
-    const blob = new Blob([lastMessage.content], { type: "text/plain" });
+    // look for the most relevant assistant message that likely contains the PDF or final plan
+    const assistantMsgs = messages.filter((m) => m.role === "assistant");
+    const lastMessage = assistantMsgs[assistantMsgs.length - 1] || messages[messages.length - 1];
+
+    if (!lastMessage) {
+      toast({ title: "No plan found", description: "There is no assistant message to download." });
+      return;
+    }
+
+    const content = lastMessage.content || "";
+
+    // 1) If content contains an HTTP(s) link to a PDF -> open direct link
+    const pdfUrlMatch = content.match(/https?:\/\/\S+\.pdf/);
+    if (pdfUrlMatch) {
+      const pdfUrl = pdfUrlMatch[0];
+      window.open(pdfUrl, "_blank");
+      toast({ title: "Opening PDF", description: "Opening your plan PDF" });
+      return;
+    }
+
+    // 2) If content contains a data:application/pdf;base64, download it
+    const dataPdfMatch = content.match(/data:application\/pdf;base64,([A-Za-z0-9+/=]+)/);
+    if (dataPdfMatch) {
+      const base64 = dataPdfMatch[1];
+      const byteCharacters = atob(base64);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "healthbuddy-plan.pdf";
+      a.click();
+      URL.revokeObjectURL(url);
+      toast({ title: "Download Started", description: "Your PDF is downloading." });
+      return;
+    }
+
+    // 3) If the assistant previously returned a short message with a PDF URL in another message (search back)
+    for (let i = assistantMsgs.length - 1; i >= 0; i--) {
+      const m = assistantMsgs[i];
+      const urlMatch = (m.content || "").match(/https?:\/\/\S+/);
+      if (urlMatch) {
+        window.open(urlMatch[0], "_blank");
+        toast({ title: "Opening link", description: "Opening the link provided by the assistant." });
+        return;
+      }
+    }
+
+    // 4) Fallback: download message content as text
+    const blob = new Blob([content], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = "healthbuddy-plan.txt";
     a.click();
     URL.revokeObjectURL(url);
-    
+
     toast({
       title: "Download Started",
       description: "Your plan has been downloaded",
@@ -59,14 +112,37 @@ const Chat = () => {
   };
 
   const handleShareWhatsApp = () => {
-    const lastMessage = messages[messages.length - 1];
-    const text = encodeURIComponent(lastMessage.content);
+    // share the last assistant message (or last message)
+    const assistantMsgs = messages.filter((m) => m.role === "assistant");
+    const lastMessage = assistantMsgs[assistantMsgs.length - 1] || messages[messages.length - 1];
+    if (!lastMessage) {
+      toast({ title: "Nothing to share", description: "No assistant message found to share." });
+      return;
+    }
+    const text = encodeURIComponent(lastMessage.content || "");
     window.open(`https://wa.me/?text=${text}`, "_blank");
-    
+
     toast({
       title: "Opening WhatsApp",
       description: "Share your plan with friends",
     });
+  };
+
+  // helper to decide whether action buttons should be shown for a message
+  const shouldShowActionsFor = (message: Message) => {
+    if (!message) return false;
+    // 1) explicit final plan flag
+    if (message.isFinalPlan) return true;
+
+    const content = (message.content || "").toLowerCase();
+    // 2) quick-replies hint
+    if (message.quickReplies && message.quickReplies.some((q) => q.toLowerCase().includes("download"))) return true;
+    // 3) contains obvious pdf/url keywords
+    if (content.includes("pdf") || content.includes("your plan") || content.includes(".pdf") || content.includes("download")) return true;
+    // 4) fallback: show actions for longer assistant messages (likely a plan)
+    if (message.role === "assistant" && content.length > 200) return true;
+
+    return false;
   };
 
   return (
@@ -97,8 +173,8 @@ const Chat = () => {
                     }`}
                   >
                     <p className="whitespace-pre-wrap">{message.content}</p>
-                    
-                    {message.isFinalPlan && (
+
+                    {shouldShowActionsFor(message) && (
                       <div className="mt-4 space-y-2 pt-4 border-t border-border/20">
                         <Button
                           onClick={handleDownloadPlan}
@@ -122,7 +198,7 @@ const Chat = () => {
                     )}
                   </div>
                 </div>
-                
+
                 {message.quickReplies && message.quickReplies.length > 0 && (
                   <div className="flex flex-wrap gap-2 justify-start">
                     {message.quickReplies.map((reply, idx) => (
@@ -140,7 +216,7 @@ const Chat = () => {
                 )}
               </div>
             ))}
-            
+
             {isLoading && (
               <div className="flex justify-start fade-up">
                 <div className="bg-secondary text-secondary-foreground rounded-2xl px-4 py-3">
@@ -148,7 +224,7 @@ const Chat = () => {
                 </div>
               </div>
             )}
-            
+
             <div ref={messagesEndRef} />
           </CardContent>
 
