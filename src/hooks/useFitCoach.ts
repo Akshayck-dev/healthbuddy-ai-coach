@@ -28,14 +28,16 @@ export const useFitCoach = () => {
   const [messages, setMessages] = useState<Message[]>(() => {
     try {
       const raw = localStorage.getItem(LS_MESSAGES_KEY);
-      return raw ? JSON.parse(raw) : [
-        {
-          role: "assistant",
-          content:
-            "Welcome to HealthBuddy! I'm your AI fitness and diet coach. Let's start by choosing your language. നിങ്ങളുടെ ഭാഷ തിരഞ്ഞെടുക്കുക.",
-          quickReplies: ["English", "Malayalam / മലയാളം"],
-        },
-      ];
+      return raw ? JSON.parse(raw) : [];
+
+      // return raw ? JSON.parse(raw) : [
+      //   {
+      //     role: "assistant",
+      //     content:
+      //       "Welcome to HealthBuddy! I'm your AI fitness and diet coach. Let's start by choosing your language. നിങ്ങളുടെ ഭാഷ തിരഞ്ഞെടുക്കുക.",
+      //     quickReplies: ["English", "Malayalam / മലയാളം"],
+      //   },
+      // ];
     } catch {
       return [
         {
@@ -179,11 +181,17 @@ export const useFitCoach = () => {
   };
 
   const resetChat = () => {
-    const welcome = {
-      role: "assistant",
-      content: "Welcome back! Let's start fresh. Please choose your language.",
-      quickReplies: ["English", "Malayalam / മലയാളം"],
-    } as Message;
+
+    const welcome = null;
+setMessages([]);
+setSessionId("");
+setUserLanguage("");
+
+    // const welcome = {
+    //   role: "assistant",
+    //   content: "Welcome back! Let's start fresh. Please choose your language.",
+    //   quickReplies: ["English", "Malayalam / മലയാളം"],
+    // } as Message;
 
     setMessages([welcome]);
     setSessionId("");
