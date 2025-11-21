@@ -68,7 +68,14 @@ const Chat = () => {
 
     const content = lastMessage.content || "";
 
-    // 1) If content contains an HTTP(s) link to a PDF -> open direct link
+    // 1) If meta contains a pdfUrl, open it
+    if (lastMessage.meta?.pdfUrl) {
+      window.open(lastMessage.meta.pdfUrl, "_blank");
+      toast({ title: "Opening PDF", description: "Opening your plan PDF" });
+      return;
+    }
+
+    // 2) If content contains an HTTP(s) link to a PDF -> open direct link
     const pdfUrlMatch = content.match(/https?:\/\/\S+\.pdf/);
     if (pdfUrlMatch) {
       const pdfUrl = pdfUrlMatch[0];
@@ -77,50 +84,18 @@ const Chat = () => {
       return;
     }
 
-    // 2) If meta contains a pdfUrl, open it
-    if ((lastMessage.meta?.pdfUrl)) {
-      window.open(lastMessage.meta.pdfUrl, "_blank");
-      toast({ title: "Opening PDF", description: "Opening your plan PDF" });
-      return;
-    }
-
     // 3) If content contains a data:application/pdf;base64, download it
     const dataPdfMatch = content.match(/data:application\/pdf;base64,([A-Za-z0-9+/=]+)/);
     if (dataPdfMatch) {
       const base64 = dataPdfMatch[1];
-      const byteCharacters = atob(base64);
-      const byteNumbers = new Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
-      }
-      const byteArray = new Uint8Array(byteNumbers);
-      const blob = new Blob([byteArray], { type: "application/pdf" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "healthbuddy-plan.pdf";
-      a.click();
-      URL.revokeObjectURL(url);
+      downloadBase64Pdf(base64, "healthbuddy-plan.pdf");
       toast({ title: "Download Started", description: "Your PDF is downloading." });
       return;
     }
 
     // 4) If meta contains pdfBase64, download it
     if (lastMessage.meta?.pdfBase64) {
-      const base64 = lastMessage.meta.pdfBase64;
-      const byteCharacters = atob(base64);
-      const byteNumbers = new Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
-      }
-      const byteArray = new Uint8Array(byteNumbers);
-      const blob = new Blob([byteArray], { type: "application/pdf" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "healthbuddy-plan.pdf";
-      a.click();
-      URL.revokeObjectURL(url);
+      downloadBase64Pdf(lastMessage.meta.pdfBase64, "healthbuddy-plan.pdf");
       toast({ title: "Download Started", description: "Your PDF is downloading." });
       return;
     }
@@ -138,6 +113,27 @@ const Chat = () => {
       title: "Download Started",
       description: "Your plan has been downloaded",
     });
+  };
+
+  const downloadBase64Pdf = (base64: string, filename = "plan.pdf") => {
+    try {
+      const byteCharacters = atob(base64);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Download base64 pdf failed:", e);
+      toast({ title: "Download failed", description: "Could not download PDF" });
+    }
   };
 
   const handleShareWhatsApp = () => {
@@ -192,9 +188,7 @@ const Chat = () => {
             {messages.map((message, index) => (
               <div key={index} className="space-y-2 fade-up">
                 <div
-                  className={`flex ${
-                    message.role === "user" ? "justify-end" : "justify-start"
-                  }`}
+                  className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
                 >
                   <div
                     className={`max-w-[80%] rounded-2xl px-4 py-3 ${
@@ -207,21 +201,11 @@ const Chat = () => {
 
                     {shouldShowActionsFor(message) && (
                       <div className="mt-4 space-y-2 pt-4 border-t border-border/20">
-                        <Button
-                          onClick={handleDownloadPlan}
-                          variant="outline"
-                          size="sm"
-                          className="w-full"
-                        >
+                        <Button onClick={handleDownloadPlan} variant="outline" size="sm" className="w-full">
                           <Download className="w-4 h-4 mr-2" />
                           Download PDF
                         </Button>
-                        <Button
-                          onClick={handleShareWhatsApp}
-                          variant="outline"
-                          size="sm"
-                          className="w-full"
-                        >
+                        <Button onClick={handleShareWhatsApp} variant="outline" size="sm" className="w-full">
                           <Share2 className="w-4 h-4 mr-2" />
                           Share to WhatsApp
                         </Button>
@@ -261,12 +245,7 @@ const Chat = () => {
 
           <div className="p-4 border-t border-border">
             <div className="flex gap-2">
-              <Button
-                onClick={handleRestart}
-                variant="outline"
-                size="icon"
-                className="shrink-0"
-              >
+              <Button onClick={handleRestart} variant="outline" size="icon" className="shrink-0">
                 <RotateCcw className="w-4 h-4" />
               </Button>
               <Input
@@ -277,11 +256,7 @@ const Chat = () => {
                 disabled={isLoading}
                 className="flex-1"
               />
-              <Button
-                onClick={() => handleSend()}
-                disabled={isLoading || !input.trim()}
-                className="wellness-gradient shrink-0"
-              >
+              <Button onClick={() => handleSend()} disabled={isLoading || !input.trim()} className="wellness-gradient shrink-0">
                 <Send className="w-4 h-4" />
               </Button>
             </div>
