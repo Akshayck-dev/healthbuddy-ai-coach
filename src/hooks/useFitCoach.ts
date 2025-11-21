@@ -13,21 +13,25 @@ export interface AIResponse {
   slot_to_ask?: string;
   message: string;
   quick_replies?: string[];
+  user_language?: "en" | "ml";        // add this
 }
 
 export const useFitCoach = () => {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
-      content: "Welcome to HealthBuddy! I'm your AI fitness and diet coach. Let's start by choosing your language. നിങ്ങളുടെ ഭാഷ തിരഞ്ഞെടുക്കുക.",
+      content:
+        "Welcome to HealthBuddy! I'm your AI fitness and diet coach. Let's start by choosing your language. നിങ്ങളുടെ ഭാഷ തിരഞ്ഞെടുക്കുക.",
       quickReplies: ["English", "Malayalam / മലയാളം"],
     },
   ]);
+
+  const [userLanguage, setUserLanguage] = useState<"en" | "ml" | "">("");  // NEW
   const [isLoading, setIsLoading] = useState(false);
 
   const sendMessage = async (userMessage: string) => {
     setIsLoading(true);
-    
+
     const newUserMessage: Message = {
       role: "user",
       content: userMessage,
@@ -41,18 +45,22 @@ export const useFitCoach = () => {
         content: msg.content,
       }));
 
-      const { data, error } = await supabase.functions.invoke('fitcoach', {
+      const { data, error } = await supabase.functions.invoke("fitcoach", {
         body: { 
-          messages: conversationHistory 
-        }
+          messages: conversationHistory,
+          user_language: userLanguage         // SEND LANGUAGE
+        },
       });
 
-      if (error) {
-        throw error;
-      }
+      if (error) throw error;
 
       const aiResponse = data as AIResponse;
-      
+
+      // SAVE language if AI responds with it
+      if (aiResponse.user_language) {
+        setUserLanguage(aiResponse.user_language);
+      }
+
       const botMessage: Message = {
         role: "assistant",
         content: aiResponse.message,
@@ -62,14 +70,14 @@ export const useFitCoach = () => {
 
       setMessages((prev) => [...prev, botMessage]);
     } catch (error) {
-      console.error('Error sending message:', error);
-      
+      console.error("Error sending message:", error);
+
       const errorMessage: Message = {
         role: "assistant",
         content: "Sorry, I encountered an error. Please try again.",
         quickReplies: ["Start over"],
       };
-      
+
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
@@ -84,6 +92,8 @@ export const useFitCoach = () => {
         quickReplies: ["English", "Malayalam / മലയാളം"],
       },
     ]);
+
+    setUserLanguage("");     // RESET LANGUAGE MEMORY
   };
 
   return {
