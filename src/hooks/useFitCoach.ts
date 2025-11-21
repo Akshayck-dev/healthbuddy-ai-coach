@@ -7,6 +7,7 @@ export interface Message {
   content: string;
   quickReplies?: string[];
   isFinalPlan?: boolean;
+  meta?: any;
 }
 
 export interface AIResponse {
@@ -77,6 +78,15 @@ export const useFitCoach = () => {
     } catch {}
   }, [userLanguage]);
 
+  // normalize quick reply tokens to internal values
+  const normalizeQuickReplyToValue = (reply: string) => {
+    const r = reply.trim().toLowerCase();
+    if (["english", "english 🇬🇧", "eng", "en"].includes(r)) return "English";
+    if (["malayalam", "മലയാളം", "malayalam / മലയാളം", "ml"].includes(r)) return "Malayalam";
+    // handle standard tokens
+    return reply;
+  };
+
   const sendMessage = async (
     userMessage: string,
     opts?: { generate_pdf?: boolean; short?: boolean; mode?: string }
@@ -132,26 +142,27 @@ export const useFitCoach = () => {
         if (["malayalam", "മലയാളം", "ml"].includes(lastUser)) setUserLanguage("ml");
       }
 
+      // If backend included pdf meta or pdfUrl, attach to message content & meta
       const botMessage: Message = {
         role: "assistant",
-        content: aiResponse.message,
+        content: aiResponse.message || "",
         quickReplies: aiResponse.quick_replies || [],
         isFinalPlan: aiResponse.type === "final_plan",
+        meta: aiResponse.meta || {},
       };
+
+      // If meta contains pdfUrl, append a short hint so Chat shows download button reliably
+      if (aiResponse.meta?.pdfUrl) {
+        botMessage.content = `${botMessage.content}\n\nYour plan PDF: ${aiResponse.meta.pdfUrl}`;
+      } else if (aiResponse.meta?.pdfBase64) {
+        // include a small data url hint (Chat download will detect data:application/pdf;base64)
+        botMessage.content = `${botMessage.content}\n\n(pdf_base64_available)`;
+      }
 
       setMessages((prev) => [...prev, botMessage]);
 
-      // If response includes PDF URL or base64 in meta, append a quick reply to let user download/share
-      if (aiResponse.meta?.pdfUrl || aiResponse.meta?.pdfBase64) {
-        const pdfHint: Message = {
-          role: "assistant",
-          content: aiResponse.meta.pdfUrl
-            ? `Your plan PDF is ready: ${aiResponse.meta.pdfUrl}`
-            : "Your plan PDF is ready (base64 included). Use the download option.",
-          quickReplies: ["Download PDF", "Share to WhatsApp"],
-        };
-        setMessages((prev) => [...prev, pdfHint]);
-      }
+      // If backend set ask_slot with quick_replies, frontend will show buttons (hook passes quickReplies)
+      // If backend returned final_plan with structured fields, we already appended them to message in backend.
     } catch (err) {
       console.error("Error sending message:", err);
 
