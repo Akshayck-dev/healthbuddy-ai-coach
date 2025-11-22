@@ -31,7 +31,7 @@ export const useFitCoach = () => {
       return raw ? JSON.parse(raw) : [
         {
           role: "assistant",
-          content: "Welcome to HealthBuddy! Let's start by choosing your language. നിങ്ങളുടെ ഭാഷ തിരഞ്ഞെടുക്കുക.",
+          content: "Welcome to HealthBuddy! I'm your AI fitness and diet coach. Let's start by choosing your language. നിങ്ങളുടെ ഭാഷ തിരഞ്ഞെടുക്കുക.",
           quickReplies: ["English", "Malayalam / മലയാളം"],
         },
       ];
@@ -39,7 +39,7 @@ export const useFitCoach = () => {
       return [
         {
           role: "assistant",
-          content: "Welcome to HealthBuddy! Let's start by choosing your language. നിങ്ങളുടെ ഭാഷ തിരഞ്ഞെടുക്കുക.",
+          content: "Welcome to HealthBuddy! I'm your AI fitness and diet coach. Let's start by choosing your language. നിങ്ങളുടെ ഭാഷ തിരഞ്ഞെടുക്കുക.",
           quickReplies: ["English", "Malayalam / മലയാളം"],
         },
       ];
@@ -54,24 +54,14 @@ export const useFitCoach = () => {
   useEffect(() => { try { if (sessionId) localStorage.setItem(LS_SESSION_KEY, sessionId); else localStorage.removeItem(LS_SESSION_KEY); } catch {} }, [sessionId]);
   useEffect(() => { try { if (userLanguage) localStorage.setItem(LS_LANG_KEY, userLanguage); else localStorage.removeItem(LS_LANG_KEY); } catch {} }, [userLanguage]);
 
-  const normalizeQuickReplyToValue = (reply: string) => {
-    const r = reply.trim().toLowerCase();
-    if (["english", "english 🇬🇧", "eng", "en"].includes(r)) return "English";
-    if (["malayalam", "മലയാളം", "malayalam / മലയാളം", "ml"].includes(r)) return "Malayalam";
-    return reply;
-  };
-
   const sendMessage = async (userMessage: string, opts?: { generate_pdf?: boolean; short?: boolean; mode?: string }) => {
     setIsLoading(true);
     const newUserMessage: Message = { role: "user", content: userMessage };
     setMessages(prev => [...prev, newUserMessage]);
 
     try {
-      // use a short tail of conversation when sending to the backend to avoid confusing the model with repeated welcome text
-      const TAIL_LEN = 10;
-      const tail = [...messages, newUserMessage].slice(-TAIL_LEN).map(m => ({ role: m.role, content: m.content }));
-
-      const payload: any = { messages: tail, session_id: sessionId || undefined, user_language: userLanguage || undefined };
+      const conversationHistory = [...messages, newUserMessage].map(m => ({ role: m.role, content: m.content }));
+      const payload: any = { messages: conversationHistory, session_id: sessionId || undefined, user_language: userLanguage || undefined };
       if (opts?.generate_pdf) payload.generate_pdf = true;
       if (opts?.short) payload.short = true;
       if (opts?.mode) payload.mode = opts.mode;
@@ -80,7 +70,6 @@ export const useFitCoach = () => {
       if (error) throw error;
       const aiResponse = data as AIResponse;
 
-      // persist session_id / language
       if (aiResponse.session_id) setSessionId(aiResponse.session_id);
       if (aiResponse.user_language) setUserLanguage(aiResponse.user_language);
       else {
@@ -89,7 +78,7 @@ export const useFitCoach = () => {
         if (["malayalam", "മലയാളം", "ml"].includes(lu)) setUserLanguage("ml");
       }
 
-      // defensive quick replies for ask_slot
+      // Defensive injection of quick replies for missing suggestions
       if (aiResponse.type === "ask_slot" && (!aiResponse.quick_replies || aiResponse.quick_replies.length === 0)) {
         const s = (aiResponse.slot_to_ask || "").toLowerCase();
         if (s === "activity_level") aiResponse.quick_replies = ["sedentary", "light", "moderate", "active", "very_active"];
@@ -98,7 +87,7 @@ export const useFitCoach = () => {
         else if (s === "gender") aiResponse.quick_replies = ["male", "female", "other"];
       }
 
-      // dedupe identical assistant messages
+      // Prevent duplicate assistant messages in a row
       const lastAssistant = messages.slice().reverse().find(m => m.role === "assistant");
       const duplicateCheck = (aiResponse.message || "").trim();
       if (lastAssistant && lastAssistant.content && lastAssistant.content.trim() === duplicateCheck) {
@@ -115,7 +104,6 @@ export const useFitCoach = () => {
         setMessages(prev => [...prev, botMessage]);
       }
 
-      // ensure final_plan quick replies exist
       if (aiResponse.type === "final_plan") {
         setMessages(prev => {
           const last = prev[prev.length - 1];
@@ -126,6 +114,7 @@ export const useFitCoach = () => {
           return [...prev.slice(0, prev.length - 1), last];
         });
       }
+
     } catch (err) {
       console.error("Error sending message:", err);
       const errorMessage: Message = { role: "assistant", content: "Sorry, I encountered an error. Please try again.", quickReplies: ["Start over"] };
