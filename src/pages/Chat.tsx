@@ -74,7 +74,7 @@ const Chat = () => {
     const content = (message.content || "").toLowerCase();
     if (message.quickReplies && message.quickReplies.some(q => q.toLowerCase().includes("download"))) return true;
     if (message.meta && (message.meta.pdfUrl || message.meta.pdfBase64)) return true;
-    if (message.role === "assistant" && content.length > 240) return true;
+    if (message.role === "assistant" && content.length > 200) return true;
     return false;
   };
 
